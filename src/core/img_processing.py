@@ -86,102 +86,214 @@ class ImgProcessing:
         )
         image.save(self.image_path)
 
-    # ── Grid extraction (unchanged per user request) ────────────────
+    # ── Grid detection (multi-method: Canny + HoughCircles) ──────────
 
-    def _get_grid_img(self):
-        img = self.img.copy()
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        thresh = cv2.threshold(blurred, 180, 255, cv2.THRESH_BINARY)[1]
+    @staticmethod
+    def _dedup(candidates, threshold=20):
+        candidates = sorted(candidates, key=lambda t: (t[1], t[0]))
+        result = []
+        used = set()
+        for i, t in enumerate(candidates):
+            if i in used:
+                continue
+            group = [t]
+            for j in range(i + 1, len(candidates)):
+                if j in used:
+                    continue
+                if math.hypot(t[0] - candidates[j][0], t[1] - candidates[j][1]) < threshold:
+                    group.append(candidates[j])
+                    used.add(j)
+            used.add(i)
+            result.append((int(np.median([g[0] for g in group])),
+                           int(np.median([g[1] for g in group]))))
+        return result
 
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (8, 3))
-        dilate = cv2.dilate(thresh, kernel, iterations=2)
-        contours, _ = cv2.findContours(dilate, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    @staticmethod
+    def _cluster_1d(vals, tol):
+        vals = sorted(vals)
+        clusters = []
+        for v in vals:
+            placed = False
+            for i, c in enumerate(clusters):
+                if abs(v - c) < tol:
+                    clusters[i] = (c + v) // 2
+                    placed = True
+                    break
+            if not placed:
+                clusters.append(v)
+        return sorted(clusters)
 
+    @staticmethod
+    def _fit_grid(centers, h, w):
+        if len(centers) < 9:
+            return None
+        tol = min(h, w) * 0.04
+        rows_y = ImgProcessing._cluster_1d([c[1] for c in centers], tol)
+        cols_x = ImgProcessing._cluster_1d([c[0] for c in centers], tol)
+        if len(rows_y) < 3 or len(cols_x) < 3 or abs(len(rows_y) - len(cols_x)) > 1:
+            return None
+        n = max(len(rows_y), len(cols_x))
+        rs = [rows_y[i + 1] - rows_y[i] for i in range(len(rows_y) - 1)]
+        cs = [cols_x[i + 1] - cols_x[i] for i in range(len(cols_x) - 1)]
+        row_var = (max(rs) - min(rs)) / np.mean(rs) if len(rs) > 1 else 0
+        col_var = (max(cs) - min(cs)) / np.mean(cs) if len(cs) > 1 else 0
+        hits = 0
+        for ry in rows_y:
+            for cx in cols_x:
+                for c in centers:
+                    if abs(c[0] - cx) < tol and abs(c[1] - ry) < tol:
+                        hits += 1
+                        break
+        coverage = hits / (n * n)
+        score = coverage - 0.3 * (row_var + col_var)
+        return {
+            "n": n, "rows": rows_y[:n], "cols": cols_x[:n],
+            "score": score,
+            "step_x": int(np.median(cs)), "step_y": int(np.median(rs)),
+        }
+
+    @staticmethod
+    def _canny_candidates(gray, img_area):
+        edges = cv2.Canny(gray, 50, 150)
+        contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        raw = []
+        for c in contours:
+            area = cv2.contourArea(c)
+            if area < img_area * 0.003 or area > img_area * 0.08:
+                continue
+            x2, y2, w2, h2 = cv2.boundingRect(c)
+            asp = w2 / h2 if h2 else 0
+            if 0.7 < asp < 1.4:
+                raw.append((x2 + w2 // 2, y2 + h2 // 2, area))
+        if not raw:
+            return []
+        areas = sorted([t[2] for t in raw])
+        med = areas[len(areas) // 2]
+        return ImgProcessing._dedup(
+            [(t[0], t[1]) for t in raw if 0.5 < t[2] / med < 2.0], 20
+        )
+
+    @staticmethod
+    def _hough_candidates(gray, w, h):
+        blurred = cv2.GaussianBlur(gray, (9, 9), 2)
+        circles = cv2.HoughCircles(
+            blurred, cv2.HOUGH_GRADIENT, 1.2,
+            minDist=int(min(w, h) * 0.08),
+            param1=100, param2=30,
+            minRadius=int(min(w, h) * 0.04),
+            maxRadius=int(min(w, h) * 0.13),
+        )
+        if circles is None:
+            return []
+        radii = sorted([int(c[2]) for c in circles[0]])
+        q1, q3 = radii[len(radii) // 4], radii[3 * len(radii) // 4]
+        iqr = q3 - q1
+        lo, hi = q1 - 1.5 * max(iqr, 3), q3 + 1.5 * max(iqr, 3)
+        return ImgProcessing._dedup(
+            [(int(c[0]), int(c[1])) for c in circles[0] if lo <= int(c[2]) <= hi], 25
+        )
+
+    def _detect_grid(self):
+        h, w = self.img.shape[:2]
+        gray = cv2.cvtColor(self.img, cv2.COLOR_BGR2GRAY)
+        img_area = h * w
+
+        canny_pts = self._canny_candidates(gray, img_area)
+        hough_pts = self._hough_candidates(gray, w, h)
+
+        best = None
+        for pts in [canny_pts, hough_pts, self._dedup(canny_pts + hough_pts, 25)]:
+            result = self._fit_grid(pts, h, w)
+            if result and (best is None or result["score"] > best["score"]):
+                best = result
+
+        if best is None:
+            return None
+
+        n = best["n"]
+        tile_size = int(min(best["step_x"], best["step_y"]) * 0.55)
+
+        grid = []
+        for ry in best["rows"]:
+            row = [(cx, ry, tile_size) for cx in best["cols"]]
+            grid.append(row)
+        return grid, n, tile_size
+
+    # ── Letter extraction ───────────────────────────────────────────
+
+    @staticmethod
+    def _make_clean_letter(contour, thresh_img):
+        x, y, w, h = cv2.boundingRect(contour)
+        mask_crop = thresh_img[y:y + h, x:x + w]
+        clean = cv2.bitwise_not(mask_crop)
+        clean_rgb = cv2.cvtColor(clean, cv2.COLOR_GRAY2RGB)
+        size = max(w, h) + 10
+        padded = np.ones((size, size, 3), dtype=np.uint8) * 255
+        xo, yo = (size - w) // 2, (size - h) // 2
+        padded[yo:yo + h, xo:xo + w] = clean_rgb
+        return padded
+
+    @staticmethod
+    def _fix_char(char):
+        if char == "l":
+            return "I"
+        if len(char) == 1:
+            return char.upper()
+        return char
+
+    def _extract_letter_from_tile(self, cx, cy, tile_size):
+        h_img, w_img = self.img.shape[:2]
+        half = tile_size // 2
+        y1, y2 = max(0, cy - half), min(h_img, cy + half)
+        x1, x2 = max(0, cx - half), min(w_img, cx + half)
+
+        tile = self.img[y1:y2, x1:x2]
+        if tile.size == 0:
+            return None
+
+        gray = cv2.cvtColor(tile, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             return None
 
-        padding = 5
-        largest = max(contours, key=cv2.contourArea)
-        x, y, w, h = cv2.boundingRect(largest)
-        H, W = self.img.shape[:2]
+        tile_area = tile.shape[0] * tile.shape[1]
+        sig = [c for c in contours if cv2.contourArea(c) > tile_area * 0.02]
+        if not sig:
+            return None
 
-        mask = np.zeros(self.img.shape[:2], dtype=np.uint8)
-        cv2.rectangle(mask, (x, y), (x + w, y + h), 255, -1)
+        if len(sig) > 1:
+            sig.sort(key=lambda c: cv2.boundingRect(c)[0])
+            text, total_conf = "", 0.0
+            for cont in sig:
+                padded = self._make_clean_letter(cont, thresh)
+                char, conf = self.classifier.read_letter(padded)
+                text += char
+                total_conf += conf
+            return self._fix_char(text), total_conf / len(sig)
 
-        grid_img = self.img.copy()
-        grid_img[mask == 0] = 255
-        return grid_img
-
-    def _get_letter_contours(self):
-        grid_img = self._get_grid_img()
-        gray = cv2.cvtColor(grid_img, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        thresh = cv2.threshold(blurred, 150, 255, cv2.THRESH_BINARY_INV)[1]
-
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (8, 3))
-        dilate = cv2.dilate(thresh, kernel, iterations=2)
-        contours, _ = cv2.findContours(dilate, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        return contours, grid_img
-
-    # ── Letter image helpers ────────────────────────────────────────
-
-    def _create_letter_square_img(self, img, contour, pad: int):
-        x, y, w, h = cv2.boundingRect(contour)
-        crop = img[y : y + h, x : x + w]
-        size = max(w, h) + 2 * pad
-
-        padded = np.ones((size, size, 3), dtype=np.uint8) * 255
-        x_off = (size - w) // 2
-        y_off = (size - h) // 2
-        padded[y_off : y_off + h, x_off : x_off + w] = crop
-
-        return padded, (x, y, w, h)
-
-    def _preprocess_letter_img(self, letter_img):
-        gray = cv2.cvtColor(letter_img, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 140, 255, cv2.THRESH_BINARY)
-        return thresh
+        padded = self._make_clean_letter(np.vstack(sig), thresh)
+        char, conf = self.classifier.read_letter(padded)
+        return self._fix_char(char), conf
 
     # ── OCR ─────────────────────────────────────────────────────────
 
-    def _get_letter_text(self, letter_img) -> tuple[str, float]:
-        letter_inv = cv2.bitwise_not(letter_img.copy())
-        contours, _ = cv2.findContours(letter_inv, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        letter_rgb = cv2.cvtColor(letter_img, cv2.COLOR_GRAY2RGB)
-
-        if len(contours) > 1:
-            contours = contours[::-1]
-            characters = ""
-            total_conf = 0.0
-            for idx, cont in enumerate(contours):
-                sub_img, _ = self._create_letter_square_img(letter_rgb, cont, 1)
-                char, conf = self.classifier.read_letter(sub_img)
-                if char == "l" and idx == 0:
-                    char = "I"
-                characters += char
-                total_conf += conf
-            return characters, round(total_conf / len(characters), 2)
-
-        char, conf = self.classifier.read_letter(letter_rgb)
-        return char, round(conf, 2)
-
     def _img_to_text(self) -> None:
         self.letters_info = []
-        letter_contours, grid_img = self._get_letter_contours()
+        result = self._detect_grid()
+        if not result:
+            return
 
-        for l_con in letter_contours:
-            letter_img, l_bbox = self._create_letter_square_img(grid_img, l_con, 5)
-            preprocessed = self._preprocess_letter_img(letter_img)
-            text, _ = self._get_letter_text(preprocessed)
-
-            if text == "l":
-                text = "I"
-
-            cx = l_bbox[0] + l_bbox[2] // 2
-            cy = l_bbox[1] + l_bbox[3] // 2
-            self.letters_info.append((cx, cy, text))
+        grid, n, tile_size = result
+        for row in grid:
+            for cx, cy, ts in row:
+                letter_result = self._extract_letter_from_tile(cx, cy, ts)
+                if letter_result:
+                    text, _ = letter_result
+                else:
+                    text = "?"
+                self.letters_info.append((cx, cy, text))
 
     def _convert_to_letter_grid(self) -> None:
         n = len(self.letters_info)
