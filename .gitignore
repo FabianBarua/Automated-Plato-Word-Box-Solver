@@ -1,0 +1,43 @@
+# ── Python ──────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/temp/
+*.spec.bak
+
+# ── Virtual environments ─────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── PyInstaller output ───────────────────────────────────────────────
+# dist/ contains built executables and the installer — not source code
+dist/
+
+# ── Build working directory ──────────────────────────────────────────
+build/temp/
+
+# ── ML — keep .onnx (small, 2 MB), exclude the original .pth (6 MB) ─
+src/ml/best_custom_cnn.pth
+
+# ── Screenshots / debug output ───────────────────────────────────────
+src/screenshots/
+
+# ── IDE / OS ─────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.user
+.DS_Store
+Thumbs.db
+
+# ── Jupyter checkpoints ──────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── Logs ─────────────────────────────────────────────────────────────
+*.log
