@@ -25,6 +25,9 @@ build/temp/
 # ── ML — keep .onnx (small, 2 MB), exclude the original .pth (6 MB) ─
 src/ml/best_custom_cnn.pth
 
+# ── Training dataset (52k images — do not commit) ────────────────────
+src/ml/alphabet_dataset/
+
 # ── Screenshots / debug output ───────────────────────────────────────
 src/screenshots/
 
