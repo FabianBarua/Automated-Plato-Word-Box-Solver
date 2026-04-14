@@ -19,8 +19,12 @@ class LetterClassifier:
         with open(ML_DIR / "class_names.json", encoding="utf-8") as f:
             self.class_names = json.load(f)
 
+        providers = ['DmlExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']
+        available = ort.get_available_providers()
+        selected = [p for p in providers if p in available] or ['CPUExecutionProvider']
+
         self.session = ort.InferenceSession(
-            model_path, providers=["CPUExecutionProvider"]
+            model_path, providers=selected
         )
         self.input_name = self.session.get_inputs()[0].name
 
@@ -47,3 +51,29 @@ class LetterClassifier:
         idx = int(probs.argmax(axis=1)[0])
         confidence = float(probs[0, idx])
         return self.class_names[idx], confidence
+
+    def read_letters_batch(self, images):
+        """Classify multiple letter images in a single ONNX inference call."""
+        if not images:
+            return []
+
+        pil_images = [
+            Image.fromarray(img) if isinstance(img, np.ndarray) else img
+            for img in images
+        ]
+        batch = np.concatenate(
+            [self._preprocess(img) for img in pil_images], axis=0
+        )
+
+        try:
+            (logits,) = self.session.run(None, {self.input_name: batch})
+        except Exception:
+            return [self.read_letter(img) for img in images]
+
+        exp = np.exp(logits - logits.max(axis=1, keepdims=True))
+        probs = exp / exp.sum(axis=1, keepdims=True)
+        indices = probs.argmax(axis=1)
+        return [
+            (self.class_names[int(idx)], float(probs[i, idx]))
+            for i, idx in enumerate(indices)
+        ]

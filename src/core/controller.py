@@ -29,6 +29,9 @@ class AppController:
     def set_language(self, language: str) -> None:
         self.solver.set_language(language)
 
+    def set_min_word_length(self, length: int) -> None:
+        self.solver.set_min_word_length(length)
+
     # ── Scan game ───────────────────────────────────────────────────
 
     def set_game(self) -> None:
@@ -111,30 +114,45 @@ class AppController:
             reverse=True,
         )
 
+        use_adb = (settings.get_input_mode() == "ADB"
+                    and self.device_manager.adb_input
+                    and self.device_manager.adb_input.status()[0])
+
         for (_, _), path in sorted_words:
             if not self.app.is_solving:
                 self.app.is_paused = False
                 break
 
-            y, x = path[0]
-            pos_x, pos_y = self.solver.cell_window_positions[y][x]
-
-            pyautogui.moveTo(
-                self.img_process.window_left + pos_x,
-                self.img_process.window_top + pos_y,
-            )
-            pyautogui.mouseDown(button="left")
-
-            for i in range(1, len(path)):
-                y, x = path[i]
+            if use_adb:
+                points = []
+                for py, px in path:
+                    pos_x, pos_y = self.solver.cell_window_positions[py][px]
+                    points.append((pos_x, pos_y))
+                self.device_manager.adb_input.swipe_path(
+                    points,
+                    self.img_process.window_width,
+                    self.img_process.window_height,
+                )
+            else:
+                y, x = path[0]
                 pos_x, pos_y = self.solver.cell_window_positions[y][x]
-                mov_x = self.img_process.window_left + pos_x
-                mov_y = self.img_process.window_top + pos_y
 
-                speed = settings.get_speed() if settings else 0.8
-                pyautogui.moveTo(mov_x, mov_y, uniform(0, 1.0 - speed))
+                pyautogui.moveTo(
+                    self.img_process.window_left + pos_x,
+                    self.img_process.window_top + pos_y,
+                )
+                pyautogui.mouseDown(button="left")
 
-            pyautogui.mouseUp(button="left")
+                for i in range(1, len(path)):
+                    y, x = path[i]
+                    pos_x, pos_y = self.solver.cell_window_positions[y][x]
+                    mov_x = self.img_process.window_left + pos_x
+                    mov_y = self.img_process.window_top + pos_y
+
+                    speed = settings.get_speed() if settings else 0.8
+                    pyautogui.moveTo(mov_x, mov_y, uniform(0, 1.0 - speed))
+
+                pyautogui.mouseUp(button="left")
 
             while self.app.is_paused and self.app.is_solving:
                 time.sleep(0.1)
@@ -173,7 +191,8 @@ class AppController:
             self.app.after(0, settings.disable_solve_btn)
             self.app.after(0, settings.disable_scan_window_btn)
 
-            self.solver.set_screen_front(hwnd)
+            if not settings or settings.get_input_mode() != "ADB":
+                self.solver.set_screen_front(hwnd)
             self._automate()
 
             self.app.after(0, after_solving)

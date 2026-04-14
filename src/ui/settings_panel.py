@@ -25,6 +25,8 @@ class SettingsPanel:
         self.status_label: ctk.CTkLabel | None = None
         self.speed_slider: ctk.CTkSlider | None = None
         self.speed_value_label: ctk.CTkLabel | None = None
+        self.word_length_seg: ctk.CTkSegmentedButton | None = None
+        self.input_mode_seg: ctk.CTkSegmentedButton | None = None
 
         self._devices: list[dict[str, str]] = []
 
@@ -52,8 +54,12 @@ class SettingsPanel:
         self._create_divider(row=2)
         self._create_language_section(row=3)
         self._create_divider(row=5)
-        self._create_speed_section(row=6)
-        self._create_action_section(row=8)
+        self._create_word_length_section(row=6)
+        self._create_divider(row=8)
+        self._create_speed_section(row=9)
+        self._create_divider(row=11)
+        self._create_input_mode_section(row=12)
+        self._create_action_section(row=14)
 
     # ── Layout helpers ───────────────────────────────────────────────
 
@@ -258,6 +264,35 @@ class SettingsPanel:
     def _on_language_change(self, language: str) -> None:
         self.app.controller.set_language(language)
 
+    # ── Word Length ───────────────────────────────────────────────
+
+    def _create_word_length_section(self, row: int) -> None:
+        self._section_header(row, "MIN WORD LENGTH")
+        body = self._section_body(row + 1)
+
+        c = self.color
+        self.word_length_seg = ctk.CTkSegmentedButton(
+            body,
+            values=["3", "4", "5"],
+            command=self._on_word_length_change,
+            font=ctk.CTkFont("Poppins Medium", size=13),
+            selected_color=c.primary,
+            selected_hover_color=c.primary_hover,
+            unselected_color=c.surface_hi,
+            unselected_hover_color=c.border_hi,
+            text_color=c.text,
+            text_color_disabled=c.muted,
+            fg_color=c.surface_hi,
+            corner_radius=6,
+            height=36,
+            border_width=0,
+        )
+        self.word_length_seg.set("3")
+        self.word_length_seg.grid(row=0, column=0, sticky="nsew")
+
+    def _on_word_length_change(self, value: str) -> None:
+        self.app.controller.set_min_word_length(int(value))
+
     # ── Speed ─────────────────────────────────────────────────────────
 
     def _create_speed_section(self, row: int) -> None:
@@ -310,6 +345,56 @@ class SettingsPanel:
 
     def get_speed(self) -> float:
         return self.speed_slider.get() if self.speed_slider else 0.8
+
+    # ── Input Mode ────────────────────────────────────────────────
+
+    def _create_input_mode_section(self, row: int) -> None:
+        self._section_header(row, "INPUT MODE")
+        body = self._section_body(row + 1)
+
+        c = self.color
+        self.input_mode_seg = ctk.CTkSegmentedButton(
+            body,
+            values=["Mouse", "ADB"],
+            command=self._on_input_mode_change,
+            font=ctk.CTkFont("Poppins Medium", size=13),
+            selected_color=c.primary,
+            selected_hover_color=c.primary_hover,
+            unselected_color=c.surface_hi,
+            unselected_hover_color=c.border_hi,
+            text_color=c.text,
+            text_color_disabled=c.muted,
+            fg_color=c.surface_hi,
+            corner_radius=6,
+            height=36,
+            border_width=0,
+        )
+        self.input_mode_seg.set("Mouse")
+        self.input_mode_seg.grid(row=0, column=0, sticky="nsew")
+
+    def _on_input_mode_change(self, value: str) -> None:
+        if value == "ADB":
+            dm = self.device_manager
+            if not dm.device_serial:
+                self.input_mode_seg.set("Mouse")
+                return
+            if not dm.adb_input or not dm.adb_input.status()[0]:
+                ok, msg = dm.setup_adb_input()
+                if not ok:
+                    self.input_mode_seg.set("Mouse")
+                    if self.status_label:
+                        self.status_label.configure(
+                            text=msg, text_color=self.color.warning
+                        )
+                    return
+            if self.status_label and dm.adb_input:
+                _, msg = dm.adb_input.status()
+                self.status_label.configure(
+                    text=msg, text_color=self.color.success
+                )
+
+    def get_input_mode(self) -> str:
+        return self.input_mode_seg.get() if self.input_mode_seg else "Mouse"
 
     # ── Actions ───────────────────────────────────────────────────────
 

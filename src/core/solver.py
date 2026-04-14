@@ -26,9 +26,10 @@ class TrieNode:
 
 
 class Trie:
-    def __init__(self, words: list[str]) -> None:
+    def __init__(self, words: list[str], min_length: int = 3) -> None:
         self.root = TrieNode()
         self.words = words
+        self.min_length = min_length
         self._build()
 
     def insert(self, word: str, word_id: int) -> None:
@@ -43,22 +44,23 @@ class Trie:
 
     def _build(self) -> None:
         for i, w in enumerate(self.words):
-            if len(w) > 3:
+            if len(w) >= self.min_length:
                 self.insert(w, i)
 
     def rebuild(self, found_words: list[tuple[str, int]]) -> None:
         for w, w_id in found_words:
-            if len(w) > 3:
+            if len(w) >= self.min_length:
                 self.insert(w, w_id)
 
 
 # ── Solver ──────────────────────────────────────────────────────────
 
 class WordBoxSolver:
-    def __init__(self, language: str = "English") -> None:
+    def __init__(self, language: str = "English", min_word_length: int = 3) -> None:
         self._language = language
+        self._min_word_length = min_word_length
         words = _load_wordlist(LANG_MAP[language])
-        self.trie = Trie(words)
+        self.trie = Trie(words, min_word_length)
 
         self.found_words: dict[tuple[str, int], list[list[int]]] = {}
         self.letter_grid: List[List[str]] = []
@@ -71,7 +73,15 @@ class WordBoxSolver:
             return
         self._language = language
         words = _load_wordlist(LANG_MAP[language])
-        self.trie = Trie(words)
+        self.trie = Trie(words, self._min_word_length)
+        self.found_words = {}
+
+    def set_min_word_length(self, length: int) -> None:
+        if length == self._min_word_length:
+            return
+        self._min_word_length = length
+        words = _load_wordlist(LANG_MAP[self._language])
+        self.trie = Trie(words, length)
         self.found_words = {}
 
     @property

@@ -28,6 +28,8 @@ class ImgProcessing:
 
         self.window_left: int = 0
         self.window_top: int = 0
+        self.window_width: int = 0
+        self.window_height: int = 0
 
         self.is_processing: bool = False
         self.img = None
@@ -63,6 +65,8 @@ class ImgProcessing:
 
         width = right - left
         height = bottom - top
+        self.window_width = width
+        self.window_height = height
 
         hwnd_dc = win32gui.GetDC(hwnd)
         mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
@@ -277,7 +281,38 @@ class ImgProcessing:
         char, conf = self.classifier.read_letter(padded)
         return self._fix_char(char), conf
 
-    # ── OCR ─────────────────────────────────────────────────────────
+    # ── Tile image extraction (batch) ───────────────────────────────
+
+    def _extract_letter_images_from_tile(self, cx, cy, tile_size):
+        """Extract clean letter image(s) from a tile without classifying."""
+        h_img, w_img = self.img.shape[:2]
+        half = tile_size // 2
+        y1, y2 = max(0, cy - half), min(h_img, cy + half)
+        x1, x2 = max(0, cx - half), min(w_img, cx + half)
+
+        tile = self.img[y1:y2, x1:x2]
+        if tile.size == 0:
+            return []
+
+        gray = cv2.cvtColor(tile, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return []
+
+        tile_area = tile.shape[0] * tile.shape[1]
+        sig = [c for c in contours if cv2.contourArea(c) > tile_area * 0.02]
+        if not sig:
+            return []
+
+        if len(sig) > 1:
+            sig.sort(key=lambda c: cv2.boundingRect(c)[0])
+            return [self._make_clean_letter(cont, thresh) for cont in sig]
+
+        return [self._make_clean_letter(np.vstack(sig), thresh)]
+
+    # ── OCR (batch) ─────────────────────────────────────────────────
 
     def _img_to_text(self) -> None:
         self.letters_info = []
@@ -286,14 +321,35 @@ class ImgProcessing:
             return
 
         grid, n, tile_size = result
+
+        # Phase 1: Extract all letter images
+        tile_data = []
+        all_images = []
+
         for row in grid:
             for cx, cy, ts in row:
-                letter_result = self._extract_letter_from_tile(cx, cy, ts)
-                if letter_result:
-                    text, _ = letter_result
-                else:
-                    text = "?"
-                self.letters_info.append((cx, cy, text))
+                images = self._extract_letter_images_from_tile(cx, cy, ts)
+                tile_data.append((cx, cy, len(images)))
+                all_images.extend(images)
+
+        # Phase 2: Batch classify all images at once
+        if all_images:
+            results = self.classifier.read_letters_batch(all_images)
+        else:
+            results = []
+
+        # Phase 3: Reconstruct text for each tile
+        idx = 0
+        for cx, cy, count in tile_data:
+            if count == 0:
+                self.letters_info.append((cx, cy, "?"))
+            else:
+                text = ""
+                for _ in range(count):
+                    char, _ = results[idx]
+                    text += char
+                    idx += 1
+                self.letters_info.append((cx, cy, self._fix_char(text)))
 
     def _convert_to_letter_grid(self) -> None:
         n = len(self.letters_info)
