@@ -1,10 +1,14 @@
 import copy
 import ctypes
 import json
+import logging
+import time
 from typing import List
 
 LANG_MAP = {"English": "en", "Spanish": "es"}
 from core.paths import DATA_DIR
+
+log = logging.getLogger("solver")
 
 
 def _load_wordlist(lang_code: str) -> list[str]:
@@ -102,14 +106,55 @@ class WordBoxSolver:
         ctypes.windll.user32.ShowWindow(hwnd, 5)
         ctypes.windll.user32.SetForegroundWindow(hwnd)
 
+    # ── Scoring ─────────────────────────────────────────────────────
+
+    _POINTS = {3: 1, 4: 6, 5: 8, 6: 10, 7: 12}
+
+    @staticmethod
+    def word_points(word: str) -> int:
+        n = len(word)
+        return WordBoxSolver._POINTS.get(n, 14 if n >= 8 else 1)
+
+    @staticmethod
+    def path_uses_cell(path: list[list[int]], cell: tuple[int, int] | None) -> bool:
+        if cell is None:
+            return False
+        return list(cell) in path
+
+    def compute_score_summary(self, fav: tuple[int, int] | None = None) -> dict:
+        """Return a dict with total_points, bonus_words, breakdown counts."""
+        total = 0
+        bonus_count = 0
+        bonus_pts = 0
+        length_counts: dict[str, int] = {}
+        for (word, _), path in self.found_words.items():
+            base = self.word_points(word)
+            bonus = 3 if self.path_uses_cell(path, fav) else 0
+            total += base + bonus
+            if bonus:
+                bonus_count += 1
+                bonus_pts += bonus
+            bucket = f"{len(word)}" if len(word) <= 7 else "8+"
+            length_counts[bucket] = length_counts.get(bucket, 0) + 1
+        return {
+            "total_words": len(self.found_words),
+            "total_points": total,
+            "bonus_words": bonus_count,
+            "bonus_points": bonus_pts,
+            "length_counts": length_counts,
+        }
+
     # ── DFS solve ───────────────────────────────────────────────────
 
     def solve(self) -> None:
+        t0 = time.perf_counter()
         self.found_words = {}
         for row in range(len(self.letter_grid)):
             for col in range(len(self.letter_grid[0])):
                 self._dfs(self.letter_grid, self.trie.root, [], row, col)
         self.trie.rebuild(list(self.found_words.keys()))
+        log.info("solve() found %d words in %.3fs",
+                 len(self.found_words), time.perf_counter() - t0)
 
     def _is_valid(self, row: int, col: int, rows: int, cols: int) -> bool:
         return 0 <= row < rows and 0 <= col < cols

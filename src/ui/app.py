@@ -1,4 +1,5 @@
 import ctypes
+import logging
 
 import customtkinter as ctk
 
@@ -6,6 +7,8 @@ from ui.colors import Colors
 from core.controller import AppController
 from ui.settings_panel import SettingsPanel
 from ui.grid_frame import Grid
+
+log = logging.getLogger("app")
 
 
 class App(ctk.CTk):
@@ -168,3 +171,5 @@ class App(ctk.CTk):
             self.header_status.configure(
                 text="● No Device", text_color=self.color.subtext
             )
+
+

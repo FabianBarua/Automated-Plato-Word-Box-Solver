@@ -25,6 +25,7 @@ class Grid(ctk.CTkFrame):
         self.grid_row_size = 0
         
         self.empty_entries : set[ctk.CTkEntry]= set()
+        self.favorite_cell: tuple[int, int] | None = None
         
         self._apply_styles()
         self.create_grid_frame()
@@ -82,6 +83,7 @@ class Grid(ctk.CTkFrame):
         
         self.cells = []
         self.empty_entries.clear()
+        self.favorite_cell = None
         
         def stay_square(event) -> None:
             """Maintains square aspect ratio for grid frame during window resize"""
@@ -123,11 +125,23 @@ class Grid(ctk.CTkFrame):
     def fill_grid(self) -> None:
         """Populates the grid ui with the letters discovered from OCR processing"""
         # Highlight the current cell clicked and unhighlight the others
-        def on_focus_in(entry) :
-            entry.configure(**self.cell_styles_focus_in)
-            
-        def on_focus_out(entry) -> None:
-            entry.configure(**self.cell_styles_focus_out)
+        def on_focus_in(entry, r, c):
+            if self.favorite_cell == (r, c):
+                entry.configure(border_color=self.color.star)
+            else:
+                entry.configure(**self.cell_styles_focus_in)
+
+        def on_focus_out(entry, r, c) -> None:
+            if self.favorite_cell == (r, c):
+                entry.configure(border_color=self.color.star)
+            else:
+                entry.configure(**self.cell_styles_focus_out)
+
+        def on_right_click(r, c) -> None:
+            if self.favorite_cell == (r, c):
+                self._clear_favorite()
+            else:
+                self._set_favorite(r, c)
         
         def on_entry_change(entry, var, *args) -> None:
             """Validates and formats cell input in real-time"""
@@ -192,8 +206,9 @@ class Grid(ctk.CTkFrame):
                     self.empty_entries.add(entry)
                     entry.configure(fg_color=self.color.error_container)
                     
-                entry.bind("<FocusIn>", lambda event, e=entry: on_focus_in(e))
-                entry.bind("<FocusOut>", lambda event, e=entry: on_focus_out(e))
+                entry.bind("<FocusIn>", lambda event, e=entry, r=row, c=col: on_focus_in(e, r, c))
+                entry.bind("<FocusOut>", lambda event, e=entry, r=row, c=col: on_focus_out(e, r, c))
+                entry.bind("<Button-3>", lambda event, r=row, c=col: on_right_click(r, c))
                 
 
                 row_cells.append(entry)
@@ -225,4 +240,29 @@ class Grid(ctk.CTkFrame):
             settings.enable_solve_btn()
         else:
             settings.disable_solve_btn()
-        
+
+    def _set_favorite(self, row: int, col: int) -> None:
+        """Mark a cell as favourite (right-click to set)."""
+        if self.favorite_cell is not None:
+            old_r, old_c = self.favorite_cell
+            if old_r < len(self.cells) and old_c < len(self.cells[old_r]):
+                self.cells[old_r][old_c].configure(
+                    border_color=self.color.border,
+                    fg_color=self.color.on_primary,
+                )
+        self.favorite_cell = (row, col)
+        self.cells[row][col].configure(
+            border_color=self.color.star,
+            fg_color=self.color.star_bg,
+        )
+
+    def _clear_favorite(self) -> None:
+        """Remove the favourite cell marking."""
+        if self.favorite_cell is not None:
+            r, c = self.favorite_cell
+            if r < len(self.cells) and c < len(self.cells[r]):
+                self.cells[r][c].configure(
+                    border_color=self.color.border,
+                    fg_color=self.color.on_primary,
+                )
+            self.favorite_cell = None

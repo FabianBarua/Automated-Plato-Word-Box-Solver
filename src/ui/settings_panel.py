@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import customtkinter as ctk
@@ -8,6 +9,8 @@ from core.solver import LANG_MAP
 
 if TYPE_CHECKING:
     from ui.app import App
+
+log = logging.getLogger("settings_panel")
 
 
 class SettingsPanel:
@@ -27,6 +30,13 @@ class SettingsPanel:
         self.speed_value_label: ctk.CTkLabel | None = None
         self.word_length_seg: ctk.CTkSegmentedButton | None = None
         self.input_mode_seg: ctk.CTkSegmentedButton | None = None
+
+        # Score / progress widgets
+        self._score_frame: ctk.CTkFrame | None = None
+        self._score_total_label: ctk.CTkLabel | None = None
+        self._score_breakdown_label: ctk.CTkLabel | None = None
+        self._progress_bar: ctk.CTkProgressBar | None = None
+        self._progress_label: ctk.CTkLabel | None = None
 
         self._devices: list[dict[str, str]] = []
 
@@ -60,6 +70,8 @@ class SettingsPanel:
         self._create_divider(row=11)
         self._create_input_mode_section(row=12)
         self._create_action_section(row=14)
+        self._create_score_section(row=16)
+        self._create_credits_section(row=18)
 
     # ── Layout helpers ───────────────────────────────────────────────
 
@@ -167,6 +179,7 @@ class SettingsPanel:
         self.status_label.grid(row=2, column=0, sticky="w")
 
     def _on_refresh_devices(self) -> None:
+        log.debug("_on_refresh_devices()")
         self._devices = self.device_manager.get_connected_devices()
         if self._devices:
             labels = [d["label"] for d in self._devices]
@@ -176,41 +189,86 @@ class SettingsPanel:
                 text=f"{len(self._devices)} device(s) found",
                 text_color=self.color.subtext,
             )
+            log.info("Found %d device(s)", len(self._devices))
         else:
             self.device_combo.configure(values=["No devices"])
             self.device_combo.set("No devices")
             self.status_label.configure(
                 text="No devices found", text_color=self.color.subtext
             )
+            log.warning("No devices found")
 
     def _on_connect_toggle(self) -> None:
         c = self.color
         if self.device_manager.is_scrcpy_running():
+            log.info("_on_connect_toggle() — disconnecting")
             self.device_manager.stop_scrcpy()
             self._set_conn_state(connected=False)
             self.app.set_header_disconnected()
             return
 
         if not self._devices:
-            self.status_label.configure(
-                text="Refresh device list first", text_color=c.warning
-            )
-            return
+            log.warning("_on_connect_toggle() — no devices in list, refreshing first")
+            self._on_refresh_devices()
+            if not self._devices:
+                self.status_label.configure(
+                    text="Refresh device list first", text_color=c.warning
+                )
+                return
 
         selected = self.device_combo.get()
         device = next((d for d in self._devices if d["label"] == selected), None)
         if not device:
+            log.warning("_on_connect_toggle() — selected device not in list: %s", selected)
             return
 
-        ok = self.device_manager.launch_scrcpy(device["serial"])
+        log.info("_on_connect_toggle() — connecting to %s", device["serial"])
+        self.connect_btn.configure(state="disabled")
+        self.status_label.configure(text="Connecting…", text_color=c.subtext)
+
+        import threading
+
+        def connect_task() -> None:
+            ok = self.device_manager.launch_scrcpy(device["serial"])
+            self.app.after(0, lambda: self._finish_connect(ok, device))
+
+        threading.Thread(target=connect_task, daemon=True).start()
+
+    def _finish_connect(self, ok: bool, device: dict) -> None:
+        c = self.color
+        self.connect_btn.configure(state="normal")
         if ok:
+            log.info("Connection successful: %s", device["label"])
             self._set_conn_state(connected=True, label=device["label"])
             self.app.set_header_connected(device["label"])
-            self.app.after(2000, self._update_action_buttons)
+            self.app.after(500, self._update_action_buttons)
+            self._start_health_monitor()
         else:
+            log.error("Connection failed for %s", device["serial"])
             self.status_label.configure(
                 text="Failed to start scrcpy", text_color=c.error
             )
+            self._set_conn_state(connected=False)
+
+    def _start_health_monitor(self) -> None:
+        """Periodically check that scrcpy is still alive."""
+        self._health_monitor_active = True
+        self._check_health()
+
+    def _stop_health_monitor(self) -> None:
+        self._health_monitor_active = False
+
+    def _check_health(self) -> None:
+        if not getattr(self, '_health_monitor_active', False):
+            return
+        if not self.device_manager.is_scrcpy_running():
+            log.warning("Health monitor: scrcpy died — auto-disconnecting")
+            self.device_manager.stop_scrcpy()
+            self._set_conn_state(connected=False)
+            self.app.set_header_disconnected()
+            self._health_monitor_active = False
+            return
+        self.app.after(3000, self._check_health)
 
     def _set_conn_state(self, connected: bool, label: str = "") -> None:
         c = self.color
@@ -225,6 +283,7 @@ class SettingsPanel:
                 text=f"● Connected — {label}", text_color=c.success
             )
         else:
+            self._stop_health_monitor()
             self.connect_btn.configure(
                 text="Connect",
                 fg_color=c.primary,
@@ -435,16 +494,22 @@ class SettingsPanel:
         self.disable_solve_btn()
 
     def _on_scan_click(self) -> None:
+        log.info("_on_scan_click()")
         hwnd = self.app.get_mirror_hwnd()
         if not hwnd or self.app.is_scanning:
+            log.warning("_on_scan_click() — blocked (hwnd=%s, is_scanning=%s)", hwnd, self.app.is_scanning)
             return
         grid = self.app.grid_widget
         if not grid or not grid.inner_frame_label:
             return
+        self.hide_score_panel()
         self.app.controller.set_game()
 
     def _on_solve_click(self) -> None:
+        log.info("_on_solve_click()")
         if self.app.is_solving or self.app.is_scanning:
+            log.warning("_on_solve_click() — blocked (is_solving=%s, is_scanning=%s)",
+                        self.app.is_solving, self.app.is_scanning)
             return
         self.app.controller.solve_game()
 
@@ -509,3 +574,143 @@ class SettingsPanel:
         else:
             self.disable_scan_window_btn()
             self.disable_solve_btn()
+
+    # ── Score / Progress ─────────────────────────────────────────────
+
+    def _create_score_section(self, row: int) -> None:
+        c = self.color
+        self._score_frame = ctk.CTkFrame(self._scroll, fg_color="transparent", corner_radius=0)
+        self._score_frame.grid(row=row, column=0, sticky="nsew", padx=16, pady=(12, 4))
+        self._score_frame.grid_columnconfigure(0, weight=1)
+        # Hidden until solve
+        self._score_frame.grid_remove()
+
+        # Total points heading
+        self._score_total_label = ctk.CTkLabel(
+            self._score_frame,
+            text="",
+            font=ctk.CTkFont("Poppins Bold", size=14),
+            text_color=c.text,
+            fg_color="transparent",
+            anchor="w",
+        )
+        self._score_total_label.grid(row=0, column=0, sticky="w", pady=(0, 2))
+
+        # Breakdown text
+        self._score_breakdown_label = ctk.CTkLabel(
+            self._score_frame,
+            text="",
+            font=ctk.CTkFont("Poppins Medium", size=11),
+            text_color=c.subtext,
+            fg_color="transparent",
+            anchor="w",
+            justify="left",
+        )
+        self._score_breakdown_label.grid(row=1, column=0, sticky="w", pady=(0, 6))
+
+        # Progress bar
+        self._progress_bar = ctk.CTkProgressBar(
+            self._score_frame,
+            progress_color=c.primary,
+            fg_color=c.surface_hi,
+            height=10,
+            corner_radius=5,
+        )
+        self._progress_bar.set(0)
+        self._progress_bar.grid(row=2, column=0, sticky="ew", pady=(0, 2))
+
+        # Progress label
+        self._progress_label = ctk.CTkLabel(
+            self._score_frame,
+            text="",
+            font=ctk.CTkFont("Poppins Medium", size=11),
+            text_color=c.subtext,
+            fg_color="transparent",
+            anchor="w",
+        )
+        self._progress_label.grid(row=3, column=0, sticky="w")
+
+    def show_score_summary(self, summary: dict) -> None:
+        """Display pre-solve score prediction."""
+        if not self._score_frame:
+            return
+        c = self.color
+        total = summary["total_points"]
+        words = summary["total_words"]
+        bonus_w = summary["bonus_words"]
+        bonus_p = summary["bonus_points"]
+        lc = summary["length_counts"]
+
+        self._score_total_label.configure(
+            text=f"⭐  {total} pts  ·  {words} words"
+        )
+
+        lines = []
+        pt_map = {"3": 1, "4": 6, "5": 8, "6": 10, "7": 12, "8+": 14}
+        for bucket in ["3", "4", "5", "6", "7", "8+"]:
+            cnt = lc.get(bucket, 0)
+            if cnt:
+                lines.append(f"{bucket} letters: {cnt}  (+{cnt * pt_map[bucket]} pts)")
+        if bonus_w:
+            lines.append(f"★ Bonus tile: {bonus_w} words  (+{bonus_p} pts)")
+        self._score_breakdown_label.configure(text="\n".join(lines))
+
+        self._progress_bar.set(0)
+        self._progress_label.configure(text="Waiting…")
+        self._score_frame.grid()
+
+    def update_progress(self, played: int, total: int, earned: int,
+                        expected: int, done: bool = False) -> None:
+        """Update the live progress bar and label during automation."""
+        if not self._progress_bar or not self._progress_label:
+            return
+        frac = played / total if total else 0
+        self._progress_bar.set(frac)
+        pct = int(frac * 100)
+        if done:
+            self._progress_label.configure(
+                text=f"Done — {played}/{total} words · {earned} pts",
+                text_color=self.color.success,
+            )
+            self._progress_bar.configure(progress_color=self.color.success)
+        else:
+            self._progress_label.configure(
+                text=f"{played}/{total}  ({pct}%)  ·  {earned}/{expected} pts",
+            )
+
+    def hide_score_panel(self) -> None:
+        """Hide the score / progress panel."""
+        if self._score_frame:
+            self._score_frame.grid_remove()
+        if self._progress_bar:
+            self._progress_bar.configure(progress_color=self.color.primary)
+
+    # ── Credits ───────────────────────────────────────────────────────
+
+    def _create_credits_section(self, row: int) -> None:
+        c = self.color
+        frame = ctk.CTkFrame(self._scroll, fg_color="transparent", corner_radius=0)
+        frame.grid(row=row, column=0, sticky="sew", padx=16, pady=(20, 12))
+        frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            frame,
+            text="Developed by Fabian Barua",
+            font=ctk.CTkFont("Poppins Medium", size=11),
+            text_color=c.subtext,
+            fg_color="transparent",
+            anchor="center",
+        ).grid(row=0, column=0, sticky="ew")
+
+        link = ctk.CTkLabel(
+            frame,
+            text="github.com/FabianBarua",
+            font=ctk.CTkFont("Poppins Medium", size=11),
+            text_color=c.primary,
+            fg_color="transparent",
+            anchor="center",
+            cursor="hand2",
+        )
+        link.grid(row=1, column=0, sticky="ew")
+        link.bind("<Button-1>", lambda e: __import__("webbrowser").open(
+            "https://github.com/FabianBarua/"))

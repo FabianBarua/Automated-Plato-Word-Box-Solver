@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import math
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, List
 
@@ -12,6 +14,8 @@ import win32ui
 from PIL import Image
 
 from ml.letter_classifier import LetterClassifier
+
+log = logging.getLogger("img_processing")
 
 if TYPE_CHECKING:
     from core.controller import AppController
@@ -42,13 +46,27 @@ class ImgProcessing:
     def pipeline(self) -> None:
         app = self.controller.app
         app.is_scanning = True
+        self.contour_info_grid = []
+        self.letters_info = []
+        t0 = time.perf_counter()
+        log.info("pipeline() start")
 
-        self._screenshot_window()
-        self.img = cv2.imread(str(self.image_path))
-        self._img_to_text()
-        self._convert_to_letter_grid()
+        try:
+            self._screenshot_window()
+            log.debug("  screenshot saved (%dx%d)", self.window_width, self.window_height)
+            self.img = cv2.imread(str(self.image_path))
+            if self.img is None:
+                log.error("  failed to read screenshot image")
+                return
+            self._img_to_text()
+            self._convert_to_letter_grid()
 
-        app.is_scanning = False
+            log.info("pipeline() done in %.3fs — %d letters detected",
+                     time.perf_counter() - t0, len(self.letters_info))
+        except Exception:
+            log.exception("pipeline() crashed")
+        finally:
+            app.is_scanning = False
 
     # ── Screenshot ──────────────────────────────────────────────────
 
@@ -89,6 +107,12 @@ class ImgProcessing:
             1,
         )
         image.save(self.image_path)
+
+        # Cleanup GDI objects
+        save_dc.DeleteDC()
+        mfc_dc.DeleteDC()
+        win32gui.ReleaseDC(hwnd, hwnd_dc)
+        win32gui.DeleteObject(bitmap.GetHandle())
 
     # ── Grid detection (multi-method: Canny + HoughCircles) ──────────
 
@@ -212,10 +236,13 @@ class ImgProcessing:
                 best = result
 
         if best is None:
+            log.warning("  grid detection FAILED (no candidates)")
             return None
 
         n = best["n"]
         tile_size = int(min(best["step_x"], best["step_y"]) * 0.55)
+        log.info("  grid detected: %dx%d, tile_size=%d, score=%.3f",
+                 n, n, tile_size, best["score"])
 
         grid = []
         for ry in best["rows"]:
@@ -333,10 +360,13 @@ class ImgProcessing:
                 all_images.extend(images)
 
         # Phase 2: Batch classify all images at once
+        t_ocr = time.perf_counter()
         if all_images:
             results = self.classifier.read_letters_batch(all_images)
         else:
             results = []
+        log.debug("  batch OCR: %d images in %.3fs",
+                  len(all_images), time.perf_counter() - t_ocr)
 
         # Phase 3: Reconstruct text for each tile
         idx = 0

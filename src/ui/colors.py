@@ -25,6 +25,8 @@ class Colors:
         self.error      = "#F87171"   # error / disconnected
         self.error_bg   = "#2B1010"
         self.warning    = "#F0A04B"
+        self.star       = "#F5C418"   # gold, favourite cell border/accent
+        self.star_bg    = "#251E08"   # dark gold, favourite cell background
 
         # ── Text ──────────────────────────────────────────────────────
         self.text    = "#E4E4EE"   # primary text

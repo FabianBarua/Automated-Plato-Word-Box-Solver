@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 import threading
 import time
@@ -16,6 +17,8 @@ from core.solver import WordBoxSolver
 if TYPE_CHECKING:
     from ui.app import App
 
+log = logging.getLogger("controller")
+
 
 class AppController:
     def __init__(self, app: App) -> None:
@@ -27,9 +30,11 @@ class AppController:
     # ── Language ────────────────────────────────────────────────────
 
     def set_language(self, language: str) -> None:
+        log.debug("set_language(%s)", language)
         self.solver.set_language(language)
 
     def set_min_word_length(self, length: int) -> None:
+        log.debug("set_min_word_length(%d)", length)
         self.solver.set_min_word_length(length)
 
     # ── Scan game ───────────────────────────────────────────────────
@@ -40,7 +45,10 @@ class AppController:
         hwnd = self.app.get_mirror_hwnd()
 
         if not hwnd or self.app.is_solving:
+            log.warning("set_game() — skipped (hwnd=%s, is_solving=%s)", hwnd, self.app.is_solving)
             return
+
+        log.info("set_game() — starting scan")
 
         def destroy_grid() -> None:
             if not grid or not grid.frame:
@@ -51,10 +59,24 @@ class AppController:
             grid.create_grid_frame()
 
         def task() -> None:
-            self.app.after(0, destroy_grid)
-            self.img_process.pipeline()
-            self.solver.set_cell_positions(self.img_process.contour_info_grid)
-            self.app.after(0, update_ui)
+            try:
+                self.app.after(0, destroy_grid)
+                self.img_process.pipeline()
+                self.solver.set_cell_positions(self.img_process.contour_info_grid)
+                log.info("set_game() — scan complete, grid=%dx%s",
+                         len(self.img_process.contour_info_grid),
+                         len(self.img_process.contour_info_grid[0]) if self.img_process.contour_info_grid else 0)
+                self.app.after(0, update_ui)
+            except Exception:
+                log.exception("set_game() — task crashed")
+                self.app.is_scanning = False
+                self.app.after(0, on_error)
+
+        def on_error() -> None:
+            if settings:
+                settings.enable_scan_window_btn()
+            if grid and grid.inner_frame_label:
+                grid.inner_frame_label.configure(text="Scan failed — check logs")
 
         def update_ui() -> None:
             settings.enable_scan_window_btn()
@@ -77,14 +99,32 @@ class AppController:
 
     def _automate(self) -> None:
         settings = self.app.settings
+        solver = self.solver
+        total_words = len(solver.found_words)
+        log.info("_automate() — starting, %d words to play", total_words)
+
+        fav = (self.app.grid_widget.favorite_cell
+               if self.app.grid_widget else None)
+        log.info("_automate() — favorite_cell=%s", fav)
+
+        # Pre-compute total expected score
+        summary = solver.compute_score_summary(fav)
+        total_expected = summary["total_points"]
+        log.info("_automate() — expected total: %d pts (%d words, %d bonus)",
+                 total_expected, summary["total_words"], summary["bonus_words"])
+
+        # Show score summary in settings panel
+        self.app.after(0, lambda: settings.show_score_summary(summary))
 
         def on_press(key: keyboard.Key) -> bool | None:
             try:
                 if key == keyboard.Key.esc:
+                    log.info("_automate() — ESC pressed, stopping")
                     self.app.is_solving = False
                     return False
                 if key == keyboard.Key.space:
                     self.app.is_paused = not self.app.is_paused
+                    log.info("_automate() — paused=%s", self.app.is_paused)
                     style = (
                         self.app.state_label_paused_style
                         if self.app.is_paused
@@ -100,42 +140,57 @@ class AppController:
 
         self.app.is_solving = True
 
-        def path_distance(path: list[list[int]]) -> float:
-            total = 0.0
-            for i in range(len(path) - 1):
-                x1, y1 = path[i]
-                x2, y2 = path[i + 1]
-                total += math.hypot(x1 - x2, y1 - y2)
-            return total
-
+        # Sort: highest points first, fewest path cells to break ties
         sorted_words = sorted(
-            self.solver.found_words.items(),
-            key=lambda x: path_distance(x[1]),
-            reverse=True,
+            solver.found_words.items(),
+            key=lambda x: (
+                -(solver.word_points(x[0][0])
+                  + (3 if solver.path_uses_cell(x[1], fav) else 0)),
+                len(x[1]),
+            ),
         )
 
         use_adb = (settings.get_input_mode() == "ADB"
                     and self.device_manager.adb_input
                     and self.device_manager.adb_input.status()[0])
+        log.info("_automate() — use_adb=%s, word_count=%d", use_adb, len(sorted_words))
 
-        for (_, _), path in sorted_words:
+        earned = 0
+        played = 0
+
+        for (word, _), path in sorted_words:
             if not self.app.is_solving:
                 self.app.is_paused = False
                 break
 
+            base = solver.word_points(word)
+            bonus = 3 if solver.path_uses_cell(path, fav) else 0
+            pts = base + bonus
+            earned += pts
+            played += 1
+
+            log.info("_automate() — [%d/%d] '%s' +%d pts (total %d/%d)",
+                     played, total_words, word, pts, earned, total_expected)
+
+            # Update progress bar
+            self.app.after(0, lambda p=played, e=earned: settings.update_progress(
+                p, total_words, e, total_expected))
+
             if use_adb:
                 points = []
                 for py, px in path:
-                    pos_x, pos_y = self.solver.cell_window_positions[py][px]
+                    pos_x, pos_y = solver.cell_window_positions[py][px]
                     points.append((pos_x, pos_y))
                 self.device_manager.adb_input.swipe_path(
                     points,
                     self.img_process.window_width,
                     self.img_process.window_height,
                 )
+                speed = settings.get_speed() if settings else 0.8
+                time.sleep(max(0.08, 0.4 * (1.0 - speed)))
             else:
                 y, x = path[0]
-                pos_x, pos_y = self.solver.cell_window_positions[y][x]
+                pos_x, pos_y = solver.cell_window_positions[y][x]
 
                 pyautogui.moveTo(
                     self.img_process.window_left + pos_x,
@@ -145,7 +200,7 @@ class AppController:
 
                 for i in range(1, len(path)):
                     y, x = path[i]
-                    pos_x, pos_y = self.solver.cell_window_positions[y][x]
+                    pos_x, pos_y = solver.cell_window_positions[y][x]
                     mov_x = self.img_process.window_left + pos_x
                     mov_y = self.img_process.window_top + pos_y
 
@@ -159,6 +214,11 @@ class AppController:
 
         self.app.is_solving = False
         self.app.is_paused = False
+        # Final update
+        self.app.after(0, lambda: settings.update_progress(
+            played, total_words, earned, total_expected, done=True))
+        log.info("_automate() — finished: played %d/%d words, %d/%d pts",
+                 played, total_words, earned, total_expected)
 
     # ── Solve ───────────────────────────────────────────────────────
 
@@ -166,7 +226,10 @@ class AppController:
         grid = self.app.grid_widget
         settings = self.app.settings
         if not grid or not grid.frame or not settings:
+            log.warning("solve_game() — skipped (missing grid/settings)")
             return
+
+        log.info("solve_game() — starting")
 
         def after_solving() -> None:
             if self.app.state_label:
@@ -175,26 +238,35 @@ class AppController:
             settings.enable_scan_window_btn()
 
         def task() -> None:
-            letter_grid = grid.extract_letters()
-            if not grid.is_valid():
-                return
+            try:
+                letter_grid = grid.extract_letters()
+                if not grid.is_valid():
+                    log.warning("solve_game() — grid not valid, aborting")
+                    return
 
-            self.solver.set_letter_grid(letter_grid)
-            self.solver.solve()
+                log.debug("solve_game() — grid: %s", letter_grid)
+                self.solver.set_letter_grid(letter_grid)
+                self.solver.solve()
+                log.info("solve_game() — solver found %d words", len(self.solver.found_words))
 
-            hwnd = self.app.get_mirror_hwnd()
-            if not hwnd:
-                return
+                hwnd = self.app.get_mirror_hwnd()
+                if not hwnd:
+                    log.warning("solve_game() — mirror hwnd gone, aborting")
+                    return
 
-            # UI updates — pass callbacks (no parentheses!)
-            self.app.after(0, lambda: self.app.create_state_label(row=0, col=0))
-            self.app.after(0, settings.disable_solve_btn)
-            self.app.after(0, settings.disable_scan_window_btn)
+                self.app.after(0, lambda: self.app.create_state_label(row=0, col=0))
+                self.app.after(0, settings.disable_solve_btn)
+                self.app.after(0, settings.disable_scan_window_btn)
 
-            if not settings or settings.get_input_mode() != "ADB":
-                self.solver.set_screen_front(hwnd)
-            self._automate()
+                if not settings or settings.get_input_mode() != "ADB":
+                    self.solver.set_screen_front(hwnd)
+                self._automate()
 
-            self.app.after(0, after_solving)
+                self.app.after(0, after_solving)
+            except Exception:
+                log.exception("solve_game() — task crashed")
+                self.app.is_solving = False
+                self.app.is_paused = False
+                self.app.after(0, after_solving)
 
         threading.Thread(target=task, daemon=True).start()
