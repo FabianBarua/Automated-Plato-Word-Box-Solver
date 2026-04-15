@@ -2,8 +2,8 @@
 ; Requires Inno Setup 6+
 
 #define MyAppName      "Plato Word Box Solver"
-#define MyAppVersion   "2.0.0"
-#define MyAppPublisher "G3rarrd"
+#define MyAppVersion   "1.0.0"
+#define MyAppPublisher "Fabian Barua"
 #define MyAppExeName   "WordBoxSolver.exe"
 
 [Setup]
@@ -13,13 +13,15 @@ AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
-OutputDir=..\dist\installer
+OutputDir=dist\installer
 OutputBaseFilename=WordBoxSolver_Setup_{#MyAppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+SetupIconFile=app.ico
+UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -30,7 +32,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 ; Single exe
-Source: "..\dist\WordBoxSolver.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\WordBoxSolver.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Bundled scrcpy + adb (placed next to the exe so DeviceManager finds tools/ )
 Source: "..\tools\scrcpy\*"; DestDir: "{app}\tools\scrcpy"; Flags: ignoreversion recursesubdirs createallsubdirs

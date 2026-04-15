@@ -1,5 +1,6 @@
 """Centralized path resolution for dev mode and PyInstaller --onefile."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -32,5 +33,11 @@ ASSETS_DIR = _base_dir() / "assets"
 DATA_DIR = ASSETS_DIR / "data"
 FONTS_DIR = ASSETS_DIR / "fonts" / "Poppins"
 ML_DIR = _base_dir() / "ml"
-SCREENSHOT_DIR = _base_dir() / "screenshots"
 TOOLS_DIR = _exe_dir() / "tools"
+
+# Writable dirs go under %APPDATA% when frozen, otherwise project tree
+if getattr(sys, "frozen", False):
+    _APP_DATA = Path(os.environ.get("APPDATA", Path.home())) / "WordBoxSolver"
+else:
+    _APP_DATA = _base_dir()
+SCREENSHOT_DIR = _APP_DATA / "screenshots"

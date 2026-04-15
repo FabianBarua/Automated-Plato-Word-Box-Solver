@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from core.controller import AppController
 
 from core.paths import SCREENSHOT_DIR
-SCREENSHOT_DIR.mkdir(exist_ok=True)
+SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class ImgProcessing:

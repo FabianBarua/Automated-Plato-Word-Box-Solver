@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 
 from ui.app import App
@@ -16,8 +17,10 @@ def _setup_logging() -> None:
     ch.setLevel(logging.INFO)
     ch.setFormatter(fmt)
     root.addHandler(ch)
-    # File handler — DEBUG level
-    fh = logging.FileHandler("debug.log", mode="w", encoding="utf-8")
+    # File handler — DEBUG level, write to %APPDATA% so it works from Program Files
+    log_dir = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "WordBoxSolver")
+    os.makedirs(log_dir, exist_ok=True)
+    fh = logging.FileHandler(os.path.join(log_dir, "debug.log"), mode="w", encoding="utf-8")
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(fmt)
     root.addHandler(fh)
