@@ -153,16 +153,18 @@ class AppController:
         self.app.is_solving = True
 
         # Order words according to user setting
-        order_mode = settings.get_order() if settings else "Score"
+        order_mode = settings.get_order() if settings else "Highest score"
         items = list(solver.found_words.items())
         if order_mode == "Random":
             random.shuffle(items)
             sorted_words = items
-        elif order_mode == "Short→Long":
+        elif order_mode == "Shortest first":
             sorted_words = sorted(items, key=lambda x: (len(x[0][0]), -solver.word_points(x[0][0])))
-        elif order_mode == "Long→Short":
+        elif order_mode == "Longest first":
             sorted_words = sorted(items, key=lambda x: (-len(x[0][0]), -solver.word_points(x[0][0])))
-        else:  # Score
+        elif order_mode == "Alphabetical":
+            sorted_words = sorted(items, key=lambda x: x[0][0])
+        else:  # Highest score (default)
             sorted_words = sorted(
                 items,
                 key=lambda x: (
@@ -184,20 +186,18 @@ class AppController:
                 for (w, _), p in sorted_words
             )
 
-        # Human mode → jitter / pause profile
-        human_mode = settings.get_human_mode() if settings else "Off"
-        if human_mode == "Realistic":
-            jitter_px, pause_lo, pause_hi, miss_chance = 6, 0.25, 0.85, 0.0
-        elif human_mode == "Subtle":
-            jitter_px, pause_lo, pause_hi, miss_chance = 2, 0.05, 0.20, 0.0
-        else:
-            jitter_px, pause_lo, pause_hi, miss_chance = 0, 0.0, 0.0, 0.0
+        # Human mode: read raw jitter / max pause directly from sliders
+        # so any custom value works (presets just write to those sliders).
+        jitter_px = settings.get_human_jitter_px() if settings else 0
+        pause_max = settings.get_human_pause_max_s() if settings else 0.0
+        pause_lo = pause_max * 0.3 if pause_max > 0 else 0.0
+        pause_hi = pause_max
 
         use_adb = (settings.get_input_mode() == "ADB"
                     and self.device_manager.adb_input
                     and self.device_manager.adb_input.status()[0])
-        log.info("_automate() — use_adb=%s, word_count=%d, order=%s, human=%s",
-                 use_adb, len(sorted_words), order_mode, human_mode)
+        log.info("_automate() — use_adb=%s, word_count=%d, order=%s, jitter=%dpx, pause≤%.2fs",
+                 use_adb, len(sorted_words), order_mode, jitter_px, pause_hi)
 
         earned = 0
         played = 0

@@ -28,11 +28,14 @@ class SettingsPanel:
         self.status_label: ctk.CTkLabel | None = None
         self.speed_slider: ctk.CTkSlider | None = None
         self.speed_value_label: ctk.CTkLabel | None = None
-        self.min_word_length_seg: ctk.CTkSegmentedButton | None = None
-        self.max_word_length_seg: ctk.CTkSegmentedButton | None = None
-        self.order_seg: ctk.CTkSegmentedButton | None = None
-        self.max_words_seg: ctk.CTkSegmentedButton | None = None
+        self.min_word_length_slider: ctk.CTkSlider | None = None
+        self.max_word_length_slider: ctk.CTkSlider | None = None
+        self.order_menu: ctk.CTkOptionMenu | None = None
+        self.max_words_slider: ctk.CTkSlider | None = None
+        self.max_words_value_label: ctk.CTkLabel | None = None
         self.human_mode_seg: ctk.CTkSegmentedButton | None = None
+        self.jitter_slider: ctk.CTkSlider | None = None
+        self.pause_slider: ctk.CTkSlider | None = None
         self.input_mode_seg: ctk.CTkSegmentedButton | None = None
 
         # Score / progress widgets
@@ -130,6 +133,60 @@ class SettingsPanel:
             fg_color=self.color.border,
             corner_radius=0,
         ).grid(row=row, column=0, sticky="ew", padx=16, pady=(8, 0))
+
+    # ── Reusable: labeled integer slider ───────────────────────────
+
+    def _make_slider_row(
+        self,
+        parent: ctk.CTkFrame,
+        row: int,
+        label_text: str,
+        from_: int,
+        to: int,
+        initial: int,
+        format_value=lambda v: str(v),
+        on_change=None,
+    ) -> tuple[ctk.CTkSlider, ctk.CTkLabel]:
+        """A small label + value-on-the-right + slider. Returns (slider, value_label)."""
+        c = self.color
+        head = ctk.CTkFrame(parent, fg_color="transparent", corner_radius=0)
+        head.grid(row=row, column=0, sticky="ew", pady=(0, 2))
+        head.grid_columnconfigure(0, weight=1)
+        head.grid_columnconfigure(1, weight=0)
+
+        ctk.CTkLabel(
+            head, text=label_text,
+            font=ctk.CTkFont("Poppins Medium", size=10),
+            text_color=c.subtext, fg_color="transparent", anchor="w",
+        ).grid(row=0, column=0, sticky="w")
+
+        value_label = ctk.CTkLabel(
+            head, text=format_value(initial),
+            font=ctk.CTkFont("Poppins Medium", size=11),
+            text_color=c.primary, fg_color="transparent", anchor="e",
+        )
+        value_label.grid(row=0, column=1, sticky="e")
+
+        steps = max(1, to - from_)
+
+        def _on_slide(v: float) -> None:
+            iv = int(round(v))
+            value_label.configure(text=format_value(iv))
+            if on_change:
+                on_change(iv)
+
+        slider = ctk.CTkSlider(
+            parent, from_=from_, to=to, number_of_steps=steps,
+            command=_on_slide,
+            progress_color=c.primary,
+            button_color=c.primary,
+            button_hover_color=c.primary_hover,
+            fg_color=c.surface_hi,
+            height=14,
+        )
+        slider.set(initial)
+        slider.grid(row=row + 1, column=0, sticky="ew", pady=(0, 8))
+        return slider, value_label
 
     # ── Device ───────────────────────────────────────────────────────
 
@@ -327,140 +384,125 @@ class SettingsPanel:
     def _on_language_change(self, language: str) -> None:
         self.app.controller.set_language(language)
 
-    # ── Word Length (min + max) ───────────────────────────────────
+    # ── Word Length (min + max sliders, 3..10, 10 = "Any") ────────
+
+    _MAX_LEN_CAP = 10
+
+    def _format_max_len(self, v: int) -> str:
+        return "Any" if v >= self._MAX_LEN_CAP else str(v)
 
     def _create_word_length_section(self, row: int) -> None:
         self._section_header(row, "WORD LENGTH")
         body = self._section_body(row + 1)
         body.grid_columnconfigure(0, weight=1)
 
-        c = self.color
-        seg_kwargs = dict(
-            font=ctk.CTkFont("Poppins Medium", size=13),
-            selected_color=c.primary,
-            selected_hover_color=c.primary_hover,
-            unselected_color=c.surface_hi,
-            unselected_hover_color=c.border_hi,
-            text_color=c.text,
-            text_color_disabled=c.muted,
-            fg_color=c.surface_hi,
-            corner_radius=6,
-            height=32,
-            border_width=0,
+        self.min_word_length_slider, _ = self._make_slider_row(
+            body, row=0, label_text="Min", from_=3, to=8, initial=3,
+            on_change=self._on_min_word_length_change,
+        )
+        self.max_word_length_slider, _ = self._make_slider_row(
+            body, row=2, label_text="Max", from_=3, to=self._MAX_LEN_CAP,
+            initial=self._MAX_LEN_CAP,
+            format_value=self._format_max_len,
+            on_change=self._on_max_word_length_change,
         )
 
-        ctk.CTkLabel(
-            body, text="Min", font=ctk.CTkFont("Poppins Medium", size=10),
-            text_color=c.subtext, fg_color="transparent", anchor="w",
-        ).grid(row=0, column=0, sticky="w")
-        self.min_word_length_seg = ctk.CTkSegmentedButton(
-            body, values=["3", "4", "5"],
-            command=self._on_min_word_length_change, **seg_kwargs,
-        )
-        self.min_word_length_seg.set("3")
-        self.min_word_length_seg.grid(row=1, column=0, sticky="nsew", pady=(2, 6))
+    def _on_min_word_length_change(self, value: int) -> None:
+        self.app.controller.set_min_word_length(value)
+        # Clamp max ≥ min
+        if self.max_word_length_slider:
+            cur_max = int(round(self.max_word_length_slider.get()))
+            if cur_max < value:
+                self.max_word_length_slider.set(value)
+                # Trigger label refresh
+                self.max_word_length_slider._command(value)  # type: ignore[attr-defined]
 
-        ctk.CTkLabel(
-            body, text="Max", font=ctk.CTkFont("Poppins Medium", size=10),
-            text_color=c.subtext, fg_color="transparent", anchor="w",
-        ).grid(row=2, column=0, sticky="w")
-        self.max_word_length_seg = ctk.CTkSegmentedButton(
-            body, values=["5", "6", "7", "8+"],
-            command=self._on_max_word_length_change, **seg_kwargs,
-        )
-        self.max_word_length_seg.set("8+")
-        self.max_word_length_seg.grid(row=3, column=0, sticky="nsew", pady=(2, 0))
-
-    def _on_min_word_length_change(self, value: str) -> None:
-        self.app.controller.set_min_word_length(int(value))
-        # Keep max ≥ min
-        if self.max_word_length_seg:
-            cur_max = self.get_max_word_length()
-            if cur_max < int(value):
-                new_max = "8+" if int(value) > 7 else str(int(value))
-                self.max_word_length_seg.set(new_max)
-
-    def _on_max_word_length_change(self, value: str) -> None:
-        # Keep min ≤ max
-        if self.min_word_length_seg:
-            cur_min = int(self.min_word_length_seg.get())
-            mx = self.get_max_word_length()
-            if cur_min > mx:
-                self.min_word_length_seg.set(str(mx))
-                self.app.controller.set_min_word_length(mx)
+    def _on_max_word_length_change(self, value: int) -> None:
+        if self.min_word_length_slider:
+            cur_min = int(round(self.min_word_length_slider.get()))
+            if cur_min > value:
+                self.min_word_length_slider.set(value)
+                self.min_word_length_slider._command(value)  # type: ignore[attr-defined]
+                self.app.controller.set_min_word_length(value)
 
     def get_max_word_length(self) -> int:
-        if not self.max_word_length_seg:
+        if not self.max_word_length_slider:
             return 99
-        v = self.max_word_length_seg.get()
-        return 99 if v == "8+" else int(v)
+        v = int(round(self.max_word_length_slider.get()))
+        return 99 if v >= self._MAX_LEN_CAP else v
 
-    # ── Order ─────────────────────────────────────────────────────
+    # ── Order (dropdown) ──────────────────────────────────────────
+
+    _ORDER_VALUES = [
+        "Highest score",
+        "Random",
+        "Shortest first",
+        "Longest first",
+        "Alphabetical",
+    ]
 
     def _create_order_section(self, row: int) -> None:
         self._section_header(row, "ORDER")
         body = self._section_body(row + 1)
         c = self.color
-        self.order_seg = ctk.CTkSegmentedButton(
+        self.order_menu = ctk.CTkOptionMenu(
             body,
-            values=["Score", "Random", "Short→Long", "Long→Short"],
-            font=ctk.CTkFont("Poppins Medium", size=11),
-            selected_color=c.primary,
-            selected_hover_color=c.primary_hover,
-            unselected_color=c.surface_hi,
-            unselected_hover_color=c.border_hi,
-            text_color=c.text,
-            text_color_disabled=c.muted,
+            values=self._ORDER_VALUES,
+            font=ctk.CTkFont("Poppins Medium", size=13),
+            dropdown_font=ctk.CTkFont("Poppins Medium", size=13),
             fg_color=c.surface_hi,
+            button_color=c.border,
+            button_hover_color=c.primary,
+            text_color=c.text,
+            dropdown_fg_color=c.surface_hi,
+            dropdown_text_color=c.text,
+            dropdown_hover_color=c.border_hi,
             corner_radius=6,
-            height=32,
-            border_width=0,
+            height=36,
+            anchor="w",
         )
-        self.order_seg.set("Score")
-        self.order_seg.grid(row=0, column=0, sticky="nsew")
+        self.order_menu.set(self._ORDER_VALUES[0])
+        self.order_menu.grid(row=0, column=0, sticky="ew")
 
     def get_order(self) -> str:
-        return self.order_seg.get() if self.order_seg else "Score"
+        return self.order_menu.get() if self.order_menu else self._ORDER_VALUES[0]
 
-    # ── Max Words ─────────────────────────────────────────────────
+    # ── Max Words (slider, 0 = All) ───────────────────────────────
+
+    _MAX_WORDS_CAP = 200  # "All" sentinel
+
+    def _format_max_words(self, v: int) -> str:
+        return "All" if v >= self._MAX_WORDS_CAP else str(v)
 
     def _create_max_words_section(self, row: int) -> None:
         self._section_header(row, "MAX WORDS")
         body = self._section_body(row + 1)
-        c = self.color
-        self.max_words_seg = ctk.CTkSegmentedButton(
-            body,
-            values=["10", "25", "50", "100", "All"],
-            font=ctk.CTkFont("Poppins Medium", size=12),
-            selected_color=c.primary,
-            selected_hover_color=c.primary_hover,
-            unselected_color=c.surface_hi,
-            unselected_hover_color=c.border_hi,
-            text_color=c.text,
-            text_color_disabled=c.muted,
-            fg_color=c.surface_hi,
-            corner_radius=6,
-            height=32,
-            border_width=0,
+        body.grid_columnconfigure(0, weight=1)
+
+        self.max_words_slider, self.max_words_value_label = self._make_slider_row(
+            body, row=0, label_text="Limit", from_=1, to=self._MAX_WORDS_CAP,
+            initial=self._MAX_WORDS_CAP,
+            format_value=self._format_max_words,
         )
-        self.max_words_seg.set("All")
-        self.max_words_seg.grid(row=0, column=0, sticky="nsew")
 
     def get_max_words(self) -> int:
-        if not self.max_words_seg:
+        if not self.max_words_slider:
             return 0
-        v = self.max_words_seg.get()
-        return 0 if v == "All" else int(v)
+        v = int(round(self.max_words_slider.get()))
+        return 0 if v >= self._MAX_WORDS_CAP else v
 
-    # ── Human Mode ────────────────────────────────────────────────
+    # ── Human Mode (preset + custom jitter / pause sliders) ───────
 
     def _create_human_mode_section(self, row: int) -> None:
         self._section_header(row, "HUMAN MODE")
         body = self._section_body(row + 1)
+        body.grid_columnconfigure(0, weight=1)
+
         c = self.color
         self.human_mode_seg = ctk.CTkSegmentedButton(
             body,
-            values=["Off", "Subtle", "Realistic"],
+            values=["Off", "Subtle", "Realistic", "Custom"],
+            command=self._on_human_mode_change,
             font=ctk.CTkFont("Poppins Medium", size=12),
             selected_color=c.primary,
             selected_hover_color=c.primary_hover,
@@ -474,8 +516,53 @@ class SettingsPanel:
             border_width=0,
         )
         self.human_mode_seg.set("Off")
-        self.human_mode_seg.grid(row=0, column=0, sticky="nsew")
+        self.human_mode_seg.grid(row=0, column=0, sticky="ew", pady=(0, 8))
 
+        self.jitter_slider, _ = self._make_slider_row(
+            body, row=1, label_text="Jitter (px)", from_=0, to=20, initial=0,
+            on_change=lambda v: self._mark_human_custom(),
+        )
+        self.pause_slider, _ = self._make_slider_row(
+            body, row=3, label_text="Pause (ms max)",
+            from_=0, to=1500, initial=0,
+            on_change=lambda v: self._mark_human_custom(),
+        )
+
+    _HUMAN_PRESETS = {
+        "Off":       {"jitter": 0,  "pause": 0},
+        "Subtle":    {"jitter": 2,  "pause": 200},
+        "Realistic": {"jitter": 6,  "pause": 850},
+    }
+
+    def _on_human_mode_change(self, value: str) -> None:
+        preset = self._HUMAN_PRESETS.get(value)
+        if not preset or not self.jitter_slider or not self.pause_slider:
+            return
+        # Apply preset to sliders without re-marking as custom
+        self._suppress_custom_mark = True
+        try:
+            self.jitter_slider.set(preset["jitter"])
+            self.jitter_slider._command(preset["jitter"])  # type: ignore[attr-defined]
+            self.pause_slider.set(preset["pause"])
+            self.pause_slider._command(preset["pause"])  # type: ignore[attr-defined]
+        finally:
+            self._suppress_custom_mark = False
+
+    def _mark_human_custom(self) -> None:
+        if getattr(self, "_suppress_custom_mark", False):
+            return
+        if self.human_mode_seg and self.human_mode_seg.get() != "Custom":
+            self.human_mode_seg.set("Custom")
+
+    def get_human_jitter_px(self) -> int:
+        return int(round(self.jitter_slider.get())) if self.jitter_slider else 0
+
+    def get_human_pause_max_s(self) -> float:
+        if not self.pause_slider:
+            return 0.0
+        return self.pause_slider.get() / 1000.0
+
+    # Legacy compatibility (kept so older callers still work)
     def get_human_mode(self) -> str:
         return self.human_mode_seg.get() if self.human_mode_seg else "Off"
 
