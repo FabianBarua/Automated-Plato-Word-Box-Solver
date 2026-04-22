@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import random
 import threading
 import time
 from random import uniform
@@ -107,6 +108,17 @@ class AppController:
                if self.app.grid_widget else None)
         log.info("_automate() — favorite_cell=%s", fav)
 
+        # Filter by max word length
+        max_len = settings.get_max_word_length() if settings else 99
+        if max_len < 99:
+            filtered = {k: v for k, v in solver.found_words.items()
+                        if len(k[0]) <= max_len}
+            if len(filtered) != len(solver.found_words):
+                log.info("_automate() — max_len=%d filtered %d→%d words",
+                         max_len, len(solver.found_words), len(filtered))
+            solver.found_words = filtered
+            total_words = len(solver.found_words)
+
         # Pre-compute total expected score
         summary = solver.compute_score_summary(fav)
         total_expected = summary["total_points"]
@@ -140,20 +152,52 @@ class AppController:
 
         self.app.is_solving = True
 
-        # Sort: highest points first, fewest path cells to break ties
-        sorted_words = sorted(
-            solver.found_words.items(),
-            key=lambda x: (
-                -(solver.word_points(x[0][0])
-                  + (3 if solver.path_uses_cell(x[1], fav) else 0)),
-                len(x[1]),
-            ),
-        )
+        # Order words according to user setting
+        order_mode = settings.get_order() if settings else "Score"
+        items = list(solver.found_words.items())
+        if order_mode == "Random":
+            random.shuffle(items)
+            sorted_words = items
+        elif order_mode == "Short→Long":
+            sorted_words = sorted(items, key=lambda x: (len(x[0][0]), -solver.word_points(x[0][0])))
+        elif order_mode == "Long→Short":
+            sorted_words = sorted(items, key=lambda x: (-len(x[0][0]), -solver.word_points(x[0][0])))
+        else:  # Score
+            sorted_words = sorted(
+                items,
+                key=lambda x: (
+                    -(solver.word_points(x[0][0])
+                      + (3 if solver.path_uses_cell(x[1], fav) else 0)),
+                    len(x[1]),
+                ),
+            )
+
+        # Cap by MAX WORDS
+        max_words = settings.get_max_words() if settings else 0
+        if max_words and len(sorted_words) > max_words:
+            log.info("_automate() — capping %d→%d words", len(sorted_words), max_words)
+            sorted_words = sorted_words[:max_words]
+            total_words = len(sorted_words)
+            # Recompute expected for the capped subset
+            total_expected = sum(
+                solver.word_points(w) + (3 if solver.path_uses_cell(p, fav) else 0)
+                for (w, _), p in sorted_words
+            )
+
+        # Human mode → jitter / pause profile
+        human_mode = settings.get_human_mode() if settings else "Off"
+        if human_mode == "Realistic":
+            jitter_px, pause_lo, pause_hi, miss_chance = 6, 0.25, 0.85, 0.0
+        elif human_mode == "Subtle":
+            jitter_px, pause_lo, pause_hi, miss_chance = 2, 0.05, 0.20, 0.0
+        else:
+            jitter_px, pause_lo, pause_hi, miss_chance = 0, 0.0, 0.0, 0.0
 
         use_adb = (settings.get_input_mode() == "ADB"
                     and self.device_manager.adb_input
                     and self.device_manager.adb_input.status()[0])
-        log.info("_automate() — use_adb=%s, word_count=%d", use_adb, len(sorted_words))
+        log.info("_automate() — use_adb=%s, word_count=%d, order=%s, human=%s",
+                 use_adb, len(sorted_words), order_mode, human_mode)
 
         earned = 0
         played = 0
@@ -180,6 +224,9 @@ class AppController:
                 points = []
                 for py, px in path:
                     pos_x, pos_y = solver.cell_window_positions[py][px]
+                    if jitter_px:
+                        pos_x += random.randint(-jitter_px, jitter_px)
+                        pos_y += random.randint(-jitter_px, jitter_px)
                     points.append((pos_x, pos_y))
                 self.device_manager.adb_input.swipe_path(
                     points,
@@ -187,10 +234,16 @@ class AppController:
                     self.img_process.window_height,
                 )
                 speed = settings.get_speed() if settings else 0.8
-                time.sleep(max(0.08, 0.4 * (1.0 - speed)))
+                base_pause = max(0.08, 0.4 * (1.0 - speed))
+                if pause_hi:
+                    base_pause += uniform(pause_lo, pause_hi)
+                time.sleep(base_pause)
             else:
                 y, x = path[0]
                 pos_x, pos_y = solver.cell_window_positions[y][x]
+                if jitter_px:
+                    pos_x += random.randint(-jitter_px, jitter_px)
+                    pos_y += random.randint(-jitter_px, jitter_px)
 
                 pyautogui.moveTo(
                     self.img_process.window_left + pos_x,
@@ -201,6 +254,9 @@ class AppController:
                 for i in range(1, len(path)):
                     y, x = path[i]
                     pos_x, pos_y = solver.cell_window_positions[y][x]
+                    if jitter_px:
+                        pos_x += random.randint(-jitter_px, jitter_px)
+                        pos_y += random.randint(-jitter_px, jitter_px)
                     mov_x = self.img_process.window_left + pos_x
                     mov_y = self.img_process.window_top + pos_y
 
@@ -208,6 +264,8 @@ class AppController:
                     pyautogui.moveTo(mov_x, mov_y, uniform(0, 1.0 - speed))
 
                 pyautogui.mouseUp(button="left")
+                if pause_hi:
+                    time.sleep(uniform(pause_lo, pause_hi))
 
             while self.app.is_paused and self.app.is_solving:
                 time.sleep(0.1)

@@ -28,7 +28,11 @@ class SettingsPanel:
         self.status_label: ctk.CTkLabel | None = None
         self.speed_slider: ctk.CTkSlider | None = None
         self.speed_value_label: ctk.CTkLabel | None = None
-        self.word_length_seg: ctk.CTkSegmentedButton | None = None
+        self.min_word_length_seg: ctk.CTkSegmentedButton | None = None
+        self.max_word_length_seg: ctk.CTkSegmentedButton | None = None
+        self.order_seg: ctk.CTkSegmentedButton | None = None
+        self.max_words_seg: ctk.CTkSegmentedButton | None = None
+        self.human_mode_seg: ctk.CTkSegmentedButton | None = None
         self.input_mode_seg: ctk.CTkSegmentedButton | None = None
 
         # Score / progress widgets
@@ -54,24 +58,24 @@ class SettingsPanel:
         self._scroll.grid_columnconfigure(0, weight=1)
 
         # ── Sections ────────────────────────────────────────────────
-        # Row map in self._scroll:
-        #   0  device header        1  device body
-        #   2  divider              3  language header
-        #   4  language body        5  divider
-        #   6  speed header         7  speed body
-        #   8  action body
         self._create_device_section(row=0)
         self._create_divider(row=2)
         self._create_language_section(row=3)
         self._create_divider(row=5)
         self._create_word_length_section(row=6)
         self._create_divider(row=8)
-        self._create_speed_section(row=9)
+        self._create_order_section(row=9)
         self._create_divider(row=11)
-        self._create_input_mode_section(row=12)
-        self._create_action_section(row=14)
-        self._create_score_section(row=16)
-        self._create_credits_section(row=18)
+        self._create_max_words_section(row=12)
+        self._create_divider(row=14)
+        self._create_speed_section(row=15)
+        self._create_divider(row=17)
+        self._create_human_mode_section(row=18)
+        self._create_divider(row=20)
+        self._create_input_mode_section(row=21)
+        self._create_action_section(row=23)
+        self._create_score_section(row=25)
+        self._create_credits_section(row=27)
 
     # ── Layout helpers ───────────────────────────────────────────────
 
@@ -323,17 +327,15 @@ class SettingsPanel:
     def _on_language_change(self, language: str) -> None:
         self.app.controller.set_language(language)
 
-    # ── Word Length ───────────────────────────────────────────────
+    # ── Word Length (min + max) ───────────────────────────────────
 
     def _create_word_length_section(self, row: int) -> None:
-        self._section_header(row, "MIN WORD LENGTH")
+        self._section_header(row, "WORD LENGTH")
         body = self._section_body(row + 1)
+        body.grid_columnconfigure(0, weight=1)
 
         c = self.color
-        self.word_length_seg = ctk.CTkSegmentedButton(
-            body,
-            values=["3", "4", "5"],
-            command=self._on_word_length_change,
+        seg_kwargs = dict(
             font=ctk.CTkFont("Poppins Medium", size=13),
             selected_color=c.primary,
             selected_hover_color=c.primary_hover,
@@ -343,14 +345,139 @@ class SettingsPanel:
             text_color_disabled=c.muted,
             fg_color=c.surface_hi,
             corner_radius=6,
-            height=36,
+            height=32,
             border_width=0,
         )
-        self.word_length_seg.set("3")
-        self.word_length_seg.grid(row=0, column=0, sticky="nsew")
 
-    def _on_word_length_change(self, value: str) -> None:
+        ctk.CTkLabel(
+            body, text="Min", font=ctk.CTkFont("Poppins Medium", size=10),
+            text_color=c.subtext, fg_color="transparent", anchor="w",
+        ).grid(row=0, column=0, sticky="w")
+        self.min_word_length_seg = ctk.CTkSegmentedButton(
+            body, values=["3", "4", "5"],
+            command=self._on_min_word_length_change, **seg_kwargs,
+        )
+        self.min_word_length_seg.set("3")
+        self.min_word_length_seg.grid(row=1, column=0, sticky="nsew", pady=(2, 6))
+
+        ctk.CTkLabel(
+            body, text="Max", font=ctk.CTkFont("Poppins Medium", size=10),
+            text_color=c.subtext, fg_color="transparent", anchor="w",
+        ).grid(row=2, column=0, sticky="w")
+        self.max_word_length_seg = ctk.CTkSegmentedButton(
+            body, values=["5", "6", "7", "8+"],
+            command=self._on_max_word_length_change, **seg_kwargs,
+        )
+        self.max_word_length_seg.set("8+")
+        self.max_word_length_seg.grid(row=3, column=0, sticky="nsew", pady=(2, 0))
+
+    def _on_min_word_length_change(self, value: str) -> None:
         self.app.controller.set_min_word_length(int(value))
+        # Keep max ≥ min
+        if self.max_word_length_seg:
+            cur_max = self.get_max_word_length()
+            if cur_max < int(value):
+                new_max = "8+" if int(value) > 7 else str(int(value))
+                self.max_word_length_seg.set(new_max)
+
+    def _on_max_word_length_change(self, value: str) -> None:
+        # Keep min ≤ max
+        if self.min_word_length_seg:
+            cur_min = int(self.min_word_length_seg.get())
+            mx = self.get_max_word_length()
+            if cur_min > mx:
+                self.min_word_length_seg.set(str(mx))
+                self.app.controller.set_min_word_length(mx)
+
+    def get_max_word_length(self) -> int:
+        if not self.max_word_length_seg:
+            return 99
+        v = self.max_word_length_seg.get()
+        return 99 if v == "8+" else int(v)
+
+    # ── Order ─────────────────────────────────────────────────────
+
+    def _create_order_section(self, row: int) -> None:
+        self._section_header(row, "ORDER")
+        body = self._section_body(row + 1)
+        c = self.color
+        self.order_seg = ctk.CTkSegmentedButton(
+            body,
+            values=["Score", "Random", "Short→Long", "Long→Short"],
+            font=ctk.CTkFont("Poppins Medium", size=11),
+            selected_color=c.primary,
+            selected_hover_color=c.primary_hover,
+            unselected_color=c.surface_hi,
+            unselected_hover_color=c.border_hi,
+            text_color=c.text,
+            text_color_disabled=c.muted,
+            fg_color=c.surface_hi,
+            corner_radius=6,
+            height=32,
+            border_width=0,
+        )
+        self.order_seg.set("Score")
+        self.order_seg.grid(row=0, column=0, sticky="nsew")
+
+    def get_order(self) -> str:
+        return self.order_seg.get() if self.order_seg else "Score"
+
+    # ── Max Words ─────────────────────────────────────────────────
+
+    def _create_max_words_section(self, row: int) -> None:
+        self._section_header(row, "MAX WORDS")
+        body = self._section_body(row + 1)
+        c = self.color
+        self.max_words_seg = ctk.CTkSegmentedButton(
+            body,
+            values=["10", "25", "50", "100", "All"],
+            font=ctk.CTkFont("Poppins Medium", size=12),
+            selected_color=c.primary,
+            selected_hover_color=c.primary_hover,
+            unselected_color=c.surface_hi,
+            unselected_hover_color=c.border_hi,
+            text_color=c.text,
+            text_color_disabled=c.muted,
+            fg_color=c.surface_hi,
+            corner_radius=6,
+            height=32,
+            border_width=0,
+        )
+        self.max_words_seg.set("All")
+        self.max_words_seg.grid(row=0, column=0, sticky="nsew")
+
+    def get_max_words(self) -> int:
+        if not self.max_words_seg:
+            return 0
+        v = self.max_words_seg.get()
+        return 0 if v == "All" else int(v)
+
+    # ── Human Mode ────────────────────────────────────────────────
+
+    def _create_human_mode_section(self, row: int) -> None:
+        self._section_header(row, "HUMAN MODE")
+        body = self._section_body(row + 1)
+        c = self.color
+        self.human_mode_seg = ctk.CTkSegmentedButton(
+            body,
+            values=["Off", "Subtle", "Realistic"],
+            font=ctk.CTkFont("Poppins Medium", size=12),
+            selected_color=c.primary,
+            selected_hover_color=c.primary_hover,
+            unselected_color=c.surface_hi,
+            unselected_hover_color=c.border_hi,
+            text_color=c.text,
+            text_color_disabled=c.muted,
+            fg_color=c.surface_hi,
+            corner_radius=6,
+            height=32,
+            border_width=0,
+        )
+        self.human_mode_seg.set("Off")
+        self.human_mode_seg.grid(row=0, column=0, sticky="nsew")
+
+    def get_human_mode(self) -> str:
+        return self.human_mode_seg.get() if self.human_mode_seg else "Off"
 
     # ── Speed ─────────────────────────────────────────────────────────
 
