@@ -61,4 +61,5 @@ exe = EXE(
     console=False,          # GUI app, no console
     onefile=True,
     icon=str(ROOT / 'build' / 'app.ico'),
+    version=str(ROOT / 'build' / 'version_info.txt'),
 )
